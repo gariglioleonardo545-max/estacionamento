@@ -1,2 +1,230 @@
-# estacionamento
-Sistema de estacionamento com ESP32 e Firebase
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Estacionamento Inteligente</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: Arial, sans-serif;
+      background: #eef2f7;
+      color: #1f2937;
+      text-align: center;
+    }
+    .painel {
+      max-width: 460px;
+      margin: 35px auto;
+      padding: 28px;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 6px 24px #00000012;
+    }
+    h1 { color: #1769aa; }
+    input, button {
+      width: 100%;
+      padding: 12px;
+      margin: 7px 0;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+    input { border: 1px solid #cbd5e1; }
+    button {
+      border: 0;
+      background: #1769aa;
+      color: white;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .saida { background: #16803c; }
+    .entrada { background: #c47a08; }
+    .numero { font-size: 64px; font-weight: bold; margin: 18px; }
+    .escondido { display: none; }
+    #mensagem { overflow-wrap: anywhere; color: #b42318; }
+  </style>
+</head>
+<body>
+  <main class="painel">
+    <h1>Estacionamento Inteligente</h1>
+    <p>Monitoramento de vagas em tempo real</p>
+
+    <section id="login">
+      <h2>Entrar no sistema</h2>
+      <input id="email" type="email" placeholder="Seu e-mail" autocomplete="username">
+      <input id="senha" type="password" placeholder="Sua senha" autocomplete="current-password">
+      <button id="entrar">Entrar</button>
+    </section>
+
+    <section id="painelVagas" class="escondido">
+      <h2>Vagas disponíveis</h2>
+      <div class="numero" id="numero">--</div>
+      <p id="estado">Conectando ao banco de dados...</p>
+      <button class="entrada" id="registrarEntrada">Registrar entrada de veículo</button>
+      <button class="saida" id="registrarSaida">Registrar saída de veículo</button>
+      <button id="sair">Sair da conta</button>
+    </section>
+
+    <p id="mensagem" role="status"></p>
+  </main>
+
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+  <script>
+    // SUBSTITUA pelos valores do seu aplicativo Web no Firebase.
+    const firebaseConfig = {
+      apiKey: "SUA_API_KEY",
+      authDomain: "contador-de-carro.firebaseapp.com",
+      databaseURL: "https://contador-de-carro-default-rtdb.firebaseio.com",
+      projectId: "contador-de-carro",
+      appId: "SEU_APP_ID"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+
+    const auth = firebase.auth();
+    const db = firebase.database();
+    const vagasRef = db.ref("estacionamento/vagas");
+
+    const login = document.getElementById("login");
+    const painelVagas = document.getElementById("painelVagas");
+    const numero = document.getElementById("numero");
+    const estado = document.getElementById("estado");
+    const mensagem = document.getElementById("mensagem");
+    const entrar = document.getElementById("entrar");
+    const entrada = document.getElementById("registrarEntrada");
+    const saida = document.getElementById("registrarSaida");
+
+    let listenerVagas = null;
+    let operacaoEmAndamento = false;
+
+    function mostrarMensagem(texto) {
+      mensagem.textContent = texto;
+    }
+
+    function bloquearBotoes(bloquear) {
+      entrada.disabled = bloquear;
+      saida.disabled = bloquear;
+    }
+
+    entrar.addEventListener("click", async () => {
+      const email = document.getElementById("email").value.trim();
+      const senha = document.getElementById("senha").value;
+
+      mostrarMensagem("");
+      entrar.disabled = true;
+
+      try {
+        await auth.signInWithEmailAndPassword(email, senha);
+      } catch (erro) {
+        mostrarMensagem("Não foi possível entrar. Confira o e-mail, a senha e a configuração do Firebase.");
+        console.error(erro);
+      } finally {
+        entrar.disabled = false;
+      }
+    });
+
+    auth.onAuthStateChanged(async (usuario) => {
+      mostrarMensagem("");
+
+      if (listenerVagas) {
+        vagasRef.off("value", listenerVagas);
+        listenerVagas = null;
+      }
+
+      login.classList.toggle("escondido", !!usuario);
+      painelVagas.classList.toggle("escondido", !usuario);
+
+      if (!usuario) {
+        numero.textContent = "--";
+        estado.textContent = "Entre para consultar as vagas.";
+        return;
+      }
+
+      estado.textContent = "Conectando ao banco de dados...";
+
+      try {
+        // Inicializa com 10 apenas se o caminho ainda não existir.
+        const resultado = await vagasRef.transaction(valor => {
+          if (valor === null) return 10;
+          if (Number.isInteger(valor) && valor >= 0 && valor <= 10) {
+            return valor;
+          }
+          return;
+        });
+
+        if (!resultado.committed) {
+          throw new Error("O valor de vagas não foi inicializado ou é inválido.");
+        }
+
+        listenerVagas = snapshot => {
+          const valor = snapshot.val();
+
+          if (Number.isInteger(valor) && valor >= 0 && valor <= 10) {
+            numero.textContent = valor;
+            estado.textContent = valor === 0
+              ? "Estacionamento lotado"
+              : "Capacidade total: 10 vagas";
+          } else {
+            estado.textContent = "Valor inválido no banco de dados.";
+          }
+        };
+
+        vagasRef.on("value", listenerVagas, erro => {
+          mostrarMensagem("Erro ao ler as vagas. Verifique as regras do Firebase.");
+          console.error(erro);
+        });
+      } catch (erro) {
+        mostrarMensagem("Não foi possível acessar o banco. Confira as regras e o caminho no Firebase.");
+        console.error(erro);
+      }
+    });
+
+    async function alterarVagas(delta) {
+      if (!auth.currentUser || operacaoEmAndamento) return;
+
+      operacaoEmAndamento = true;
+      bloquearBotoes(true);
+      mostrarMensagem("");
+
+      try {
+        const resultado = await vagasRef.transaction(valor => {
+          if (!Number.isInteger(valor) || valor < 0 || valor > 10) {
+            return;
+          }
+
+          const novoValor = valor + delta;
+
+          if (novoValor < 0 || novoValor > 10) return;
+
+          return novoValor;
+        });
+
+        if (!resultado.committed) {
+          mostrarMensagem(delta < 0
+            ? "Não foi possível registrar a entrada: confira se há vaga disponível."
+            : "Não foi possível registrar a saída: confira a contagem atual.");
+        }
+      } catch (erro) {
+        mostrarMensagem("Falha ao atualizar. Verifique a conexão e as regras do Firebase.");
+        console.error(erro);
+      } finally {
+        operacaoEmAndamento = false;
+        bloquearBotoes(!auth.currentUser);
+      }
+    }
+
+    entrada.addEventListener("click", () => alterarVagas(-1));
+    saida.addEventListener("click", () => alterarVagas(1));
+
+    document.getElementById("sair").addEventListener("click", () => {
+      auth.signOut();
+    });
+  </script>
+</body>
+</html>
